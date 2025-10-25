@@ -49,7 +49,7 @@ export default function App() {
         {adding && (
           <form style={{ marginTop: 8 }}
             onSubmit={async (e) => { e.preventDefault(); const url = (e.currentTarget.elements.namedItem("url") as HTMLInputElement).value; await addPaper(url); setAdding(false); }}>
-            <input name="url" placeholder="Paste PDF, arXiv, or DOI URL" style={{ width: "100%" }} />
+            <input name="url" placeholder="Paste DOI, arXiv link/ID, landing page, or .pdf" style={{ width: "100%" }} />
             <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
               <button type="submit">Download</button>
               <button type="button" onClick={() => setAdding(false)}>Cancel</button>
