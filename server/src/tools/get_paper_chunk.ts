@@ -1,10 +1,11 @@
+/* eslint-disable @typescript-eslint/no-var-requires */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../db";
-import * as pdfjs from "pdfjs-dist";
 
-// pdfjs worker (runtime)
-(pdfjs as any).GlobalWorkerOptions.workerSrc = require("pdfjs-dist/build/pdf.worker.js");
+// Use legacy Node build of pdfjs
+const pdfjs: any = require("pdfjs-dist/legacy/build/pdf.js");
+pdfjs.GlobalWorkerOptions.workerSrc = require("pdfjs-dist/legacy/build/pdf.worker.js");
 
 type SectionRow = { page_start: number; page_end: number };
 
@@ -13,7 +14,7 @@ export async function get_paper_chunk(params: { paperId: string; sectionId: stri
 
   const pdfPath = join(process.cwd(), "data", `${paperId}.pdf`);
   const buffer = readFileSync(pdfPath);
-  const doc = await (pdfjs as any).getDocument({ data: buffer }).promise;
+  const doc = await pdfjs.getDocument({ data: buffer }).promise;
 
   const sec = db
     .prepare("SELECT page_start, page_end FROM sections WHERE id=? AND paper_id=?")
