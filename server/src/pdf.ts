@@ -1,32 +1,42 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { fetch } from "undici";
+import fs from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
 
-// Use legacy Node build of pdfjs
-const pdfjs: any = require("pdfjs-dist/legacy/build/pdf.js");
-pdfjs.GlobalWorkerOptions.workerSrc = require("pdfjs-dist/legacy/build/pdf.worker.js");
+// pdfjs-dist (legacy, node-safe)
+const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 
-const DATA_DIR = join(process.cwd(), "data");
+// Always resolve to server/data relative to this file
+const DATA_DIR = path.resolve(__dirname, "..", "data");
 
-export async function downloadPdf(url: string) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to download: ${res.status} ${res.statusText}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  const id = randomUUID();
-  const file = join(DATA_DIR, `${id}.pdf`);
-  writeFileSync(file, buf);
-  return { id, file, buffer: buf };
+export async function downloadPdf(url: string, headers?: Record<string, string>) {
+  // ensure data dir exists
+  await fs.mkdir(DATA_DIR, { recursive: true });
+
+  const res = await fetch(url, { headers: headers ?? {} });
+  if (!res.ok) throw new Error(`PDF GET failed: ${res.status} ${res.statusText}`);
+
+  const arrayBuf = await res.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuf); // Uint8Array (not Buffer)
+
+  const id = crypto.createHash("sha1").update(bytes).digest("hex");
+  const file = path.join(DATA_DIR, `${id}.pdf`);
+
+  await fs.writeFile(file, bytes); // fs accepts Uint8Array
+
+  return { id, file, bytes };
 }
 
-export async function extractPages(buffer: Buffer): Promise<string[]> {
-  const doc = await pdfjs.getDocument({ data: buffer }).promise;
+export async function extractPages(bytes: Uint8Array): Promise<string[]> {
+  const loadingTask = pdfjsLib.getDocument({ data: bytes });
+  const doc = await loadingTask.promise;
+
   const pages: string[] = [];
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
-    pages.push(content.items.map((it: any) => it.str).join(" "));
+    pages.push(content.items.map((it: any) => it.str || "").join(" "));
   }
+  await doc.cleanup?.();
   return pages;
 }

@@ -53,10 +53,17 @@ mcp.registerTool(
 
 mcp.registerTool(
   "add_paper",
-  { title: "Add paper by URL", description: "Download a PDF and index pages.", _meta: toolMeta, inputSchema: { url: z.string().url() } },
+  {
+    title: "Add paper (DOI/URL/PDF)",
+    description: "Add a paper by DOI, landing page, stamp page, or direct .pdf.",
+    _meta: toolMeta,
+    inputSchema: { url: z.string().min(5, "Provide a DOI or URL") }
+  },
   async ({ url }: { url: string }) => {
-    const { id, title } = await add_paper({ url });
-    return { structuredContent: { lastAdded: { id, title } }, content: [{ type: "text", text: `Added "${title}".` }] };
+    const { id, title } = await add_paper({ url }); // uses resolveToPdf internally
+    return {
+      content: [{ type: "text", text: `✅ Added: ${title} (id: ${id}).` }]
+    };
   }
 );
 
