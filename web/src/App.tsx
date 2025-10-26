@@ -213,7 +213,7 @@ export default function App() {
             <div style={{display:"flex", gap:8}}>
               <button className="ra-btn ra-btn-outline" onClick={refresh} title="Refresh list">Refresh</button>
               <button className="ra-btn ra-btn-danger" disabled={!selectedId} onClick={onDelete}>Delete</button>
-              <button className="ra-btn ra-btn-primary" onClick={onAddClick}>{addMode ? "Close" : "+ Add"}</button>
+              <button className="ra-btn ra-btn-primary" onClick={onAddClick}>{addMode ? "Close" : "Add"}</button>
             </div>
           </div>
 
