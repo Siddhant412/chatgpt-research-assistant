@@ -1,3 +1,4 @@
+// server/src/index.ts
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
@@ -35,16 +36,23 @@ mcp.registerResource(
   })
 );
 
-// Common tool metadata
-const toolMeta = {
+const metaUI = {
   "openai/outputTemplate": "ui://widget/research-notes.html",
   "openai/widgetAccessible": true
-};
+} as const;
+
+const metaSilent = {
+  "openai/widgetAccessible": false
+} as const;
 
 // Tools
 mcp.registerTool(
   "render_library",
-  { title: "Render Research Notes App", _meta: { ...toolMeta, "openai/toolInvocation/invoking": "Loading library…" }, inputSchema: {} },
+  {
+    title: "Render Research Notes App",
+    _meta: { ...metaUI, "openai/toolInvocation/invoking": "Loading library…" },
+    inputSchema: {}
+  },
   async () => ({
     structuredContent: await render_library(),
     content: [{ type: "text", text: "Your library UI is shown above." }]
@@ -56,7 +64,7 @@ mcp.registerTool(
   {
     title: "Add paper (DOI/URL/PDF)",
     description: "Add a paper by DOI, landing page, stamp page, or direct .pdf.",
-    _meta: toolMeta,
+    _meta: metaUI,
     inputSchema: { url: z.string().min(5, "Provide a DOI or URL") }
   },
   async ({ url }: { url: string }) => {
@@ -70,16 +78,27 @@ mcp.registerTool(
 
 mcp.registerTool(
   "index_paper",
-  { title: "List sections for a paper", _meta: toolMeta, inputSchema: { paperId: z.string() } },
-  async ({ paperId }: { paperId: string }) => ({
-    structuredContent: await render_library(),
-    content: [{ type: "text", text: "Indexed paper and refreshed library." }]
-  })
+  {
+    title: "List sections for a paper",
+    _meta: { ...metaSilent, "openai/toolInvocation/invoking": "Indexing paper…" },
+    inputSchema: { paperId: z.string() }
+  },
+  async ({ paperId }: { paperId: string }) => {
+    const payload = await index_paper({ paperId });
+    return {
+      // text-only payload the model can parse; won't trigger widget render
+      content: [{ type: "text", text: JSON.stringify(payload) }]
+    };
+  }
 );
 
 mcp.registerTool(
   "get_paper_chunk",
-  { title: "Get text for a section", _meta: toolMeta, inputSchema: { paperId: z.string(), sectionId: z.string() } },
+  {
+    title: "Get text for a section",
+    _meta: { ...metaSilent, "openai/toolInvocation/invoking": "Reading section…" },
+    inputSchema: { paperId: z.string(), sectionId: z.string() }
+  },
   async ({ paperId, sectionId }: { paperId: string; sectionId: string }) => ({
     content: [{ type: "text", text: (await get_paper_chunk({ paperId, sectionId })).text }]
   })
@@ -87,7 +106,11 @@ mcp.registerTool(
 
 mcp.registerTool(
   "save_note",
-  { title: "Save a note for a paper", _meta: toolMeta, inputSchema: { paperId: z.string(), title: z.string(), summary: z.string() } },
+  {
+    title: "Save a note for a paper",
+    _meta: metaUI,
+    inputSchema: { paperId: z.string(), title: z.string(), summary: z.string() }
+  },
   async ({ paperId, title, summary }: { paperId: string; title: string; summary: string }) => {
     await save_note({ paperId, title, summary });
     return {
@@ -102,7 +125,7 @@ mcp.registerTool(
   {
     title: "Delete a paper",
     description: "Delete a paper by id. Removes its notes, sections, and local PDF.",
-    _meta: toolMeta,
+    _meta: metaUI,
     inputSchema: { paperId: z.string().min(1) }
   },
   async ({ paperId }: { paperId: string }) => {
@@ -153,7 +176,6 @@ async function handleByExistingSession(req: IncomingMessage, res: ServerResponse
     return res.end("Not Found: Unknown session");
   }
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-
   return transport.handleRequest(req, res);
 }
 

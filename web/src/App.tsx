@@ -190,16 +190,16 @@ export default function App() {
     if (!p) return;
     await window.openai.sendFollowUpMessage({
       prompt: `
-You are connected to a Research Notes App with tools: render_library, add_paper, index_paper, get_paper_chunk, save_note.
-IMPORTANT:
-- Always use the paper's DATABASE id for "paperId"; DO NOT use DOI/URL as paperId.
-- If not indexed, call: index_paper { "paperId": "${p.id}" }.
-- To read: call get_paper_chunk per section you need.
-Write a crisp 250–400 word summary with 5 key bullets and 3 limitations.
-Then save it:
-  save_note { "paperId": "${p.id}", "title": ${JSON.stringify(p.title)}, "summary": "<your text>" }
-Finally call: render_library {}
-`
+  You are connected to a Research Notes App with tools: render_library, add_paper, index_paper, get_paper_chunk, save_note.
+  IMPORTANT:
+  - Always use the paper's DATABASE id for "paperId"; DO NOT use DOI/URL as paperId.
+  - If not indexed, call: index_paper { "paperId": "${p.id}" }.
+  - To read: call get_paper_chunk per section you need.
+  Write a crisp 250-400 word summary with 5 key bullets and 3 limitations.
+  Then save it:
+    save_note { "paperId": "${p.id}", "title": ${JSON.stringify(p.title)}, "summary": "<your text>" }
+  (Do not call render_library; save_note already refreshes the UI.)
+  `
     });
   };
 
