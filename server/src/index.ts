@@ -1,4 +1,3 @@
-// server/src/index.ts
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
@@ -11,14 +10,15 @@ import { index_paper } from "./tools/index_paper";
 import { get_paper_chunk } from "./tools/get_paper_chunk";
 import { save_note } from "./tools/save_note";
 import { render_library } from "./tools/render_library";
+import { delete_paper } from "./tools/delete_paper";
 
-// ---- Load built widget bundle ----
+// Load built widget bundle
 const WIDGET_JS = readFileSync("../web/dist/widget.js", "utf8");
 
-// ---- MCP server ----
+// MCP server
 const mcp = new McpServer({ name: "research-notes", version: "1.0.0" });
 
-// UI Resource (renders the React widget)
+// UI Resource
 mcp.registerResource(
   "widget",
   "ui://widget/research-notes.html",
@@ -41,7 +41,7 @@ const toolMeta = {
   "openai/widgetAccessible": true
 };
 
-// ---- Tools ----
+// Tools
 mcp.registerTool(
   "render_library",
   { title: "Render Research Notes App", _meta: { ...toolMeta, "openai/toolInvocation/invoking": "Loading library…" }, inputSchema: {} },
@@ -60,9 +60,10 @@ mcp.registerTool(
     inputSchema: { url: z.string().min(5, "Provide a DOI or URL") }
   },
   async ({ url }: { url: string }) => {
-    const { id, title } = await add_paper({ url }); // uses resolveToPdf internally
+    const { id, title } = await add_paper({ url });
     return {
-      content: [{ type: "text", text: `✅ Added: ${title} (id: ${id}).` }]
+      structuredContent: await render_library(),
+      content: [{ type: "text", text: `Added: ${title} (id: ${id}).` }]
     };
   }
 );
@@ -71,8 +72,8 @@ mcp.registerTool(
   "index_paper",
   { title: "List sections for a paper", _meta: toolMeta, inputSchema: { paperId: z.string() } },
   async ({ paperId }: { paperId: string }) => ({
-    structuredContent: await index_paper({ paperId }),
-    content: [{ type: "text", text: "Fetched section list." }]
+    structuredContent: await render_library(),
+    content: [{ type: "text", text: "Indexed paper and refreshed library." }]
   })
 );
 
@@ -87,13 +88,34 @@ mcp.registerTool(
 mcp.registerTool(
   "save_note",
   { title: "Save a note for a paper", _meta: toolMeta, inputSchema: { paperId: z.string(), title: z.string(), summary: z.string() } },
-  async ({ paperId, title, summary }: { paperId: string; title: string; summary: string }) => ({
-    structuredContent: await save_note({ paperId, title, summary }),
-    content: [{ type: "text", text: "Saved note." }]
-  })
+  async ({ paperId, title, summary }: { paperId: string; title: string; summary: string }) => {
+    await save_note({ paperId, title, summary });
+    return {
+      structuredContent: await render_library(),
+      content: [{ type: "text", text: "Saved note." }]
+    };
+  }
 );
 
-// ---- Session store (REUSE transports per session) ----
+mcp.registerTool(
+  "delete_paper",
+  {
+    title: "Delete a paper",
+    description: "Delete a paper by id. Removes its notes, sections, and local PDF.",
+    _meta: toolMeta,
+    inputSchema: { paperId: z.string().min(1) }
+  },
+  async ({ paperId }: { paperId: string }) => {
+    const res = await delete_paper({ paperId });
+    return {
+      structuredContent: await render_library(),
+      content: [
+        { type: "text", text: res.ok ? `🗑️ Deleted: ${res.title}` : "Paper not found." }
+      ]
+    };
+  }
+);
+
 const transports = new Map<string, StreamableHTTPServerTransport>();
 const port = parseInt(process.env.PORT || "2091", 10);
 
@@ -106,14 +128,13 @@ async function handleInitOrReuse(req: IncomingMessage, res: ServerResponse) {
   let transport = sid ? transports.get(sid) : undefined;
 
   if (!transport) {
-    // New session: create a transport and connect ONCE
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId: string) => {
         transports.set(sessionId, transport!);
       }
     });
-    await mcp.connect(transport); // connect only for brand-new transport
+    await mcp.connect(transport);
   }
 
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
@@ -132,11 +153,10 @@ async function handleByExistingSession(req: IncomingMessage, res: ServerResponse
     return res.end("Not Found: Unknown session");
   }
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-  // DO NOT call mcp.connect() again here; transport is already started
+
   return transport.handleRequest(req, res);
 }
 
-// ---- Plain HTTP server (no Express/body parsers) ----
 const httpServer = createServer(async (req, res) => {
   try {
     const url = req.url || "/";
@@ -149,11 +169,9 @@ const httpServer = createServer(async (req, res) => {
 
     if (url === "/mcp") {
       if (method === "POST") {
-        // initialization OR subsequent POSTs (both supported)
         return handleInitOrReuse(req, res);
       }
       if (method === "GET") {
-        // SSE notifications for an existing session
         return handleByExistingSession(req, res);
       }
       if (method === "DELETE") {

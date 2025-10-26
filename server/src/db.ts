@@ -1,11 +1,13 @@
 import Database from "better-sqlite3";
-import { join } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import * as path from "node:path";
+import * as fs from "node:fs";
 
-const DATA_DIR = join(process.cwd(), "data");
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+const DATA_DIR = path.join(__dirname, "..", "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-export const db = new Database(join(DATA_DIR, "app.db"));
+const DB_PATH = path.join(DATA_DIR, "app.db");
+export const db = new Database(DB_PATH);
+
 db.pragma("journal_mode = WAL");
 
 db.exec(`

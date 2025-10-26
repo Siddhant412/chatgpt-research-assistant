@@ -1,4 +1,3 @@
-// server/src/pdf_resolver.ts
 import "dotenv/config";
 import { fetch } from "undici";
 import { parse } from "node-html-parser";
@@ -33,7 +32,6 @@ export type ResolveResult = {
   fetchHeaders?: Record<string, string>;
 };
 
-// Accept both application/pdf and application/octet-stream (some IEEE responses use the latter)
 const isPdfContentType = (v: string | null) => {
   if (!v) return false;
   const t = v.toLowerCase().split(";")[0].trim();
@@ -69,7 +67,7 @@ function mergeCookies(jar: CookieJar, res: Response) {
   const parsed = setCookie.parse(raw, { map: false }) as Array<{ name: string; value: string }>;
   for (const c of parsed) {
     if (!c?.name) continue;
-    if (c.value === "_remove_") continue; // ignore placeholders
+    if (c.value === "_remove_") continue;
     jar.map.set(c.name, c.value);
   }
   if (DEBUG) log("cookie map keys:", Array.from(jar.map.keys()).join(", "));
@@ -121,7 +119,7 @@ async function tryDirectPdf(
   return null;
 }
 
-/* ---------------- arXiv ---------------- */
+/* arXiv */
 async function resolveArxiv(input: string): Promise<ResolveResult | null> {
   if (isArxivPdf(input)) return (await tryDirectPdf(input));
   const id = isArxivAbs(input)
@@ -134,7 +132,7 @@ async function resolveArxiv(input: string): Promise<ResolveResult | null> {
   return null;
 }
 
-/* ---------------- Unpaywall / S2 / OpenAlex ---------------- */
+/* Unpaywall/S2/OpenAlex */
 async function resolveViaUnpaywall(doi: string, refererForIeee?: string, jar?: CookieJar) {
   const email = process.env.UNPAYWALL_EMAIL;
   if (!email) { log("Unpaywall disabled (no email)"); return null; }
@@ -199,7 +197,7 @@ async function resolveViaOpenAlex(doi: string) {
   return ok ? { ...ok, doi, title: data?.title, sourceUrl: best?.landing_page_url ?? ok.sourceUrl, obtainedVia: "openalex" as const } : null;
 }
 
-/* ---------------- IEEE helpers ---------------- */
+/* IEEE helpers */
 function arnumberFromUrl(u: string): string | undefined {
   return u.match(/\/document\/(\d+)(?:[/?#]|$)/)?.[1];
 }
@@ -261,7 +259,6 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
   const ar = arnumberFromUrl(finalDocUrl);
   const stampUrl = ar ? `https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=${ar}` : finalDocUrl;
 
-  // (A) Prefer official getPDF.jsp (often works for OA)
   if (ar) {
     const getPdfUrl = `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=${ar}`;
     log("IEEE getPDF", getPdfUrl);
@@ -272,7 +269,6 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     }
   }
 
-  // (B) Embedded pdfPath/json (use Referer=stamp)
   const embedded = extractIeeePdfFromHtml(doc.html!, finalDocUrl);
   if (embedded) {
     log("IEEE embedded pdf", embedded);
@@ -283,7 +279,6 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     }
   }
 
-  // (C) REST metadata (with cookies)
   if (ar) {
     const metaUrl = `https://ieeexplore.ieee.org/rest/document/${ar}/metadata`;
     const headers: Record<string, string> = {
@@ -314,7 +309,6 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     }
   }
 
-  // (D) stamp.jsp page (parse for a .pdf)
   if (ar) {
     log("IEEE stamp", stampUrl);
     const cookieHeader = serializeCookies(jar);
@@ -357,7 +351,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
   return null;
 }
 
-/* ---------------- Generic HTML scan ---------------- */
+/* Normal HTML scan */
 async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | null> {
   const res = await httpGet(landingUrl);
   log("HTML scan status", res.status, "url", res.url);
@@ -415,12 +409,10 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
   return null;
 }
 
-/* ---------------- Entry ---------------- */
 export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
   const input = inputRaw.trim();
   log("resolve input:", input);
 
-  // Special-case: if input is an IEEE stamp page, route to cookie-aware IEEE path
   try {
     const u = new URL(input);
     if (isIeeeStampUrl(u)) {
@@ -430,19 +422,18 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
     }
   } catch { /* not a URL */ }
 
-  // 1) direct .pdf
+  // direct .pdf
   const direct = await tryDirectPdf(input);
   if (direct) return direct;
 
-  // 2) arXiv
+  // arXiv
   const arxiv = await resolveArxiv(input);
   if (arxiv) return arxiv;
 
-  // 3) DOI flow
+  // DOI flow
   if (isProbablyDoi(input)) {
     const doi = stripDoi(input);
 
-    // Resolve DOI → publisher page first (for referer/cookies)
     const landing = await httpGet(`https://doi.org/${doi}`);
     let docUrl: string | undefined;
     if (landing.ok) {
@@ -454,7 +445,6 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
       }
     }
 
-    // OA APIs
     const viaUP = await resolveViaUnpaywall(doi, docUrl, docUrl && isIeee(docUrl) ? { map: new Map() } : undefined);
     if (viaUP) return viaUP;
 
@@ -470,7 +460,7 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
     if (viaOA) return viaOA;
   }
 
-  // 4) Generic landing page
+  // Generic landing page
   try {
     const url = new URL(input).toString();
     const viaHtml = await resolveViaHtmlScan(url);
