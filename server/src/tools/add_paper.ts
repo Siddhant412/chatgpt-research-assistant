@@ -2,14 +2,37 @@ import { db } from "../db";
 import { downloadPdf, extractPages } from "../pdf";
 import { resolveToPdf } from "../pdf_resolver";
 
+function normalizeTitle(candidate: string | undefined, firstPage?: string): string {
+  const bad = (s?: string) => {
+    if (!s) return true;
+    const t = s.trim();
+    if (!t) return true;
+    const lo = t.toLowerCase();
+    if (lo.startsWith("received ")) return true;
+    if (lo.startsWith("accepted ")) return true;
+    if (lo.includes("digital object identifier")) return true;
+    if (lo.includes("ieee access")) return true;
+    return false;
+  };
+
+  let title = candidate?.trim() ?? "";
+
+  if (bad(title)) {
+    const fp = (firstPage ?? "").replace(/\s{2,}/g, " ").trim();
+    const seg = fp.split(/\.\s+/).sort((a, b) => b.length - a.length)[0] ?? "";
+    if (!bad(seg) && seg.length >= 10) title = seg;
+  }
+
+  if (!title) title = "Untitled paper";
+  return title.replace(/\s{2,}/g, " ").slice(0, 200);
+}
+
 export async function add_paper({ url }: { url: string }) {
   const resolved = await resolveToPdf(url);
   const { id, file, bytes } = await downloadPdf(resolved.pdfUrl, resolved.fetchHeaders);
   const pages = await extractPages(bytes);
 
-  const fallbackTitle =
-    (pages && pages[0] && pages[0].split("\n")[0]?.slice(0, 200)?.trim()) || "Untitled paper";
-  const title = (resolved.title || fallbackTitle).trim();
+  const title = normalizeTitle(resolved.title, pages[0]);
 
   const src = resolved.sourceUrl || url;
   const dup = db

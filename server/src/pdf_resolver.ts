@@ -119,6 +119,35 @@ async function tryDirectPdf(
   return null;
 }
 
+function extractTitleFromHtml(html: string, baseUrl?: string): string | undefined {
+  // IEEE-specific JSON blob
+  const mScript = html.match(/<script[^>]*id=["']global-document-metadata["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (mScript) {
+    try {
+      const json = JSON.parse(mScript[1]);
+      const t = json?.displayDocTitle || json?.title || json?.htmlTitle;
+      if (t && String(t).trim()) return String(t).trim();
+    } catch { /* ignore */ }
+  }
+
+  const root = parse(html);
+
+  // citation/og tags
+  const metaTitle =
+    root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
+    root.querySelector('meta[property="og:title"]')?.getAttribute("content");
+  if (metaTitle && metaTitle.trim()) return metaTitle.trim();
+
+  // <title> tag, strip site suffixes
+  const tt = root.querySelector("title")?.text?.trim();
+  if (tt) {
+    const cleaned = tt.replace(/\s*\|\s*IEEE.*$/i, "").trim();
+    if (cleaned) return cleaned;
+  }
+
+  return undefined;
+}
+
 /* arXiv */
 async function resolveArxiv(input: string): Promise<ResolveResult | null> {
   if (isArxivPdf(input)) return (await tryDirectPdf(input));
@@ -256,6 +285,8 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
   const doc = await fetchIeeeDocWithCookies(finalDocUrl, jar);
   if (!doc.ok) return null;
 
+  const pageTitle = extractTitleFromHtml(doc.html!);
+
   const ar = arnumberFromUrl(finalDocUrl);
   const stampUrl = ar ? `https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=${ar}` : finalDocUrl;
 
@@ -265,7 +296,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     const viaGetPdf = await tryDirectPdf(getPdfUrl, { referer: stampUrl, jar, fetchKind: "document" });
     if (viaGetPdf) {
       if (DEBUG) log("RESOLVED PDF", viaGetPdf.pdfUrl, "via", "ieee(getPDF)");
-      return { ...viaGetPdf, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
+      return { ...viaGetPdf, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
     }
   }
 
@@ -275,7 +306,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     const viaEmbedded = await tryDirectPdf(embedded, { referer: stampUrl, jar, fetchKind: "embed" });
     if (viaEmbedded) {
       if (DEBUG) log("RESOLVED PDF", viaEmbedded.pdfUrl, "via", "ieee(embedded)");
-      return { ...viaEmbedded, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
+      return { ...viaEmbedded, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
     }
   }
 
@@ -303,7 +334,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
         const ok = await tryDirectPdf(pdfUrl, { referer: stampUrl, jar, fetchKind: "embed" });
         if (ok) {
           if (DEBUG) log("RESOLVED PDF", ok.pdfUrl, "via", "ieee(rest)");
-          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
+          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
         }
       }
     }
@@ -325,6 +356,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
           pdfUrl: res.url,
           sourceUrl: finalDocUrl,
           obtainedVia: "ieee",
+          title: pageTitle,
           fetchHeaders: { Referer: finalDocUrl, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
         };
         if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "ieee(stamp-pdf)");
@@ -342,7 +374,7 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
         const ok = await tryDirectPdf(pdfUrl, { referer: stampUrl, jar, fetchKind: "embed" });
         if (ok) {
           if (DEBUG) log("RESOLVED PDF", ok.pdfUrl, "via", "ieee(stamp-embed)");
-          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
+          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
         }
       }
     }
@@ -367,6 +399,8 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
   const html = await res.text();
   const root = parse(html);
 
+  const pageTitle = extractTitleFromHtml(html, finalUrl);
+
   if (isIeee(finalUrl)) {
     const viaIeee = await resolveViaIeeeWithCookies(finalUrl);
     if (viaIeee) return viaIeee;
@@ -379,10 +413,7 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
     const url = absolutize(finalUrl, metaPdf);
     const ok = await tryDirectPdf(url, { referer: finalUrl, fetchKind: "embed" });
     if (ok) {
-      const title =
-        root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
-        root.querySelector("title")?.text?.trim();
-      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title, obtainedVia: "html-meta" };
+      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title: pageTitle, obtainedVia: "html-meta" };
       if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "html-meta");
       return resolved;
     }
@@ -397,10 +428,7 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
     const url = absolutize(finalUrl, href);
     const ok = await tryDirectPdf(url, { referer: finalUrl, fetchKind: "embed" });
     if (ok) {
-      const title =
-        root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
-        root.querySelector("title")?.text?.trim();
-      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title, obtainedVia: "html-link" };
+      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title: pageTitle, obtainedVia: "html-link" };
       if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "html-link");
       return resolved;
     }
@@ -420,20 +448,16 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
       const viaIeee = await resolveViaIeeeWithCookies(docUrl);
       if (viaIeee) return viaIeee;
     }
-  } catch { /* not a URL */ }
+  } catch {}
 
-  // direct .pdf
   const direct = await tryDirectPdf(input);
   if (direct) return direct;
 
-  // arXiv
   const arxiv = await resolveArxiv(input);
   if (arxiv) return arxiv;
 
-  // DOI flow
   if (isProbablyDoi(input)) {
     const doi = stripDoi(input);
-
     const landing = await httpGet(`https://doi.org/${doi}`);
     let docUrl: string | undefined;
     if (landing.ok) {
@@ -460,7 +484,6 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
     if (viaOA) return viaOA;
   }
 
-  // Generic landing page
   try {
     const url = new URL(input).toString();
     const viaHtml = await resolveViaHtmlScan(url);
