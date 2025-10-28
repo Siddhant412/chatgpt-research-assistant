@@ -221,7 +221,7 @@ export default function App() {
             <div className="ra-add">
               <input
                 className="ra-input"
-                placeholder="Paste DOI, landing page, or direct .pdf"
+                placeholder="Paste Title, DOI or landing page"
                 value={addUrl}
                 onChange={e => setAddUrl(e.target.value)}
               />

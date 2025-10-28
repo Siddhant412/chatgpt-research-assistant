@@ -1,3 +1,4 @@
+// server/src/pdf_resolver.ts
 import "dotenv/config";
 import { fetch } from "undici";
 import { parse } from "node-html-parser";
@@ -28,10 +29,13 @@ export type ResolveResult = {
     | "html-link"
     | "semantic-scholar"
     | "openalex"
-    | "ieee";
+    | "ieee"
+    | "title-openalex"
+    | "title-semanticscholar";
   fetchHeaders?: Record<string, string>;
 };
 
+// -------- helpers --------
 const isPdfContentType = (v: string | null) => {
   if (!v) return false;
   const t = v.toLowerCase().split(";")[0].trim();
@@ -49,21 +53,32 @@ const arxivIdFromAbs = (u: string) => u.match(/arxiv\.org\/abs\/([\w.\-\/]+)/i)?
 const isIeee = (u: string) => /ieeexplore\.ieee\.org/i.test(u);
 const absolutize = (base: string, href: string) => { try { return new URL(href, base).toString(); } catch { return href; } };
 
-type CookieJar = { map: Map<string, string> };
+// very lightweight title matcher (token Jaccard)
+function normTitle(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+function titleScore(q: string, cand: string) {
+  const A = new Set(normTitle(q).split(" ").filter(Boolean));
+  const B = new Set(normTitle(cand).split(" ").filter(Boolean));
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  A.forEach((w) => { if (B.has(w)) inter++; });
+  const union = new Set([...A, ...B]).size;
+  return inter / union; // 0..1
+}
 
+type CookieJar = { map: Map<string, string> };
 function serializeCookies(jar?: CookieJar): string | undefined {
   if (!jar) return undefined;
   const parts: string[] = [];
   jar.map.forEach((v, k) => parts.push(`${k}=${v}`));
   return parts.length ? parts.join("; ") : undefined;
 }
-
 function mergeCookies(jar: CookieJar, res: Response) {
   const raw: string[] =
     ((res as any).headers?.getSetCookie?.() as string[] | undefined) ??
     ((res.headers.get("set-cookie") as string | null) ? [res.headers.get("set-cookie") as string] : []);
   if (!raw || !raw.length) return;
-
   const parsed = setCookie.parse(raw, { map: false }) as Array<{ name: string; value: string }>;
   for (const c of parsed) {
     if (!c?.name) continue;
@@ -72,7 +87,6 @@ function mergeCookies(jar: CookieJar, res: Response) {
   }
   if (DEBUG) log("cookie map keys:", Array.from(jar.map.keys()).join(", "));
 }
-
 function addFetchHints(headers: Record<string, string>, kind: "document" | "embed") {
   if (kind === "document") {
     headers["Sec-Fetch-Site"] = "same-origin";
@@ -85,12 +99,10 @@ function addFetchHints(headers: Record<string, string>, kind: "document" | "embe
     headers["Sec-Fetch-Dest"] = "embed";
   }
 }
-
 async function httpGet(url: string, extra?: Record<string, string>) {
   log("GET", url);
   return fetch(url, { redirect: "follow", headers: { ...BASE_HEADERS, ...(extra ?? {}) } });
 }
-
 async function tryDirectPdf(
   url: string,
   opts?: { referer?: string; jar?: CookieJar; fetchKind?: "document" | "embed" }
@@ -119,36 +131,7 @@ async function tryDirectPdf(
   return null;
 }
 
-function extractTitleFromHtml(html: string, baseUrl?: string): string | undefined {
-  // IEEE-specific JSON blob
-  const mScript = html.match(/<script[^>]*id=["']global-document-metadata["'][^>]*>([\s\S]*?)<\/script>/i);
-  if (mScript) {
-    try {
-      const json = JSON.parse(mScript[1]);
-      const t = json?.displayDocTitle || json?.title || json?.htmlTitle;
-      if (t && String(t).trim()) return String(t).trim();
-    } catch { /* ignore */ }
-  }
-
-  const root = parse(html);
-
-  // citation/og tags
-  const metaTitle =
-    root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
-    root.querySelector('meta[property="og:title"]')?.getAttribute("content");
-  if (metaTitle && metaTitle.trim()) return metaTitle.trim();
-
-  // <title> tag, strip site suffixes
-  const tt = root.querySelector("title")?.text?.trim();
-  if (tt) {
-    const cleaned = tt.replace(/\s*\|\s*IEEE.*$/i, "").trim();
-    if (cleaned) return cleaned;
-  }
-
-  return undefined;
-}
-
-/* arXiv */
+/* ---------------- arXiv ---------------- */
 async function resolveArxiv(input: string): Promise<ResolveResult | null> {
   if (isArxivPdf(input)) return (await tryDirectPdf(input));
   const id = isArxivAbs(input)
@@ -161,7 +144,7 @@ async function resolveArxiv(input: string): Promise<ResolveResult | null> {
   return null;
 }
 
-/* Unpaywall/S2/OpenAlex */
+/* ---------------- Unpaywall / S2 / OpenAlex (DOI flows) ---------------- */
 async function resolveViaUnpaywall(doi: string, refererForIeee?: string, jar?: CookieJar) {
   const email = process.env.UNPAYWALL_EMAIL;
   if (!email) { log("Unpaywall disabled (no email)"); return null; }
@@ -226,11 +209,10 @@ async function resolveViaOpenAlex(doi: string) {
   return ok ? { ...ok, doi, title: data?.title, sourceUrl: best?.landing_page_url ?? ok.sourceUrl, obtainedVia: "openalex" as const } : null;
 }
 
-/* IEEE helpers */
+/* ---------------- IEEE helpers ---------------- */
 function arnumberFromUrl(u: string): string | undefined {
   return u.match(/\/document\/(\d+)(?:[/?#]|$)/)?.[1];
 }
-
 function isIeeeStampUrl(u: URL) {
   return /ieeexplore\.ieee\.org/i.test(u.host) && /\/stamp\/stamp\.jsp$/i.test(u.pathname);
 }
@@ -238,7 +220,6 @@ function docUrlFromStamp(u: URL) {
   const ar = u.searchParams.get("arnumber");
   return ar ? `https://ieeexplore.ieee.org/document/${ar}/` : u.toString();
 }
-
 function extractIeeePdfFromHtml(html: string, baseUrl: string): string | null {
   const mScript = html.match(/<script[^>]*id=["']global-document-metadata["'][^>]*>([\s\S]*?)<\/script>/i);
   if (mScript) {
@@ -265,7 +246,6 @@ function extractIeeePdfFromHtml(html: string, baseUrl: string): string | null {
   if (metaPdf) return absolutize(baseUrl, metaPdf);
   return null;
 }
-
 async function fetchIeeeDocWithCookies(docUrl: string, jar: CookieJar) {
   const headers: Record<string, string> = {
     Referer: "https://ieeexplore.ieee.org/",
@@ -279,37 +259,27 @@ async function fetchIeeeDocWithCookies(docUrl: string, jar: CookieJar) {
   const html = await res.text();
   return { ok: true as const, html };
 }
-
 async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveResult | null> {
   const jar: CookieJar = { map: new Map() };
   const doc = await fetchIeeeDocWithCookies(finalDocUrl, jar);
   if (!doc.ok) return null;
 
-  const pageTitle = extractTitleFromHtml(doc.html!);
-
   const ar = arnumberFromUrl(finalDocUrl);
   const stampUrl = ar ? `https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=${ar}` : finalDocUrl;
 
+  // (A) getPDF.jsp
   if (ar) {
     const getPdfUrl = `https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=${ar}`;
-    log("IEEE getPDF", getPdfUrl);
     const viaGetPdf = await tryDirectPdf(getPdfUrl, { referer: stampUrl, jar, fetchKind: "document" });
-    if (viaGetPdf) {
-      if (DEBUG) log("RESOLVED PDF", viaGetPdf.pdfUrl, "via", "ieee(getPDF)");
-      return { ...viaGetPdf, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
-    }
+    if (viaGetPdf) return { ...viaGetPdf, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
   }
-
+  // (B) embedded pdfPath/json
   const embedded = extractIeeePdfFromHtml(doc.html!, finalDocUrl);
   if (embedded) {
-    log("IEEE embedded pdf", embedded);
     const viaEmbedded = await tryDirectPdf(embedded, { referer: stampUrl, jar, fetchKind: "embed" });
-    if (viaEmbedded) {
-      if (DEBUG) log("RESOLVED PDF", viaEmbedded.pdfUrl, "via", "ieee(embedded)");
-      return { ...viaEmbedded, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
-    }
+    if (viaEmbedded) return { ...viaEmbedded, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
   }
-
+  // (C) REST metadata
   if (ar) {
     const metaUrl = `https://ieeexplore.ieee.org/rest/document/${ar}/metadata`;
     const headers: Record<string, string> = {
@@ -321,46 +291,32 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
     const cookieHeader = serializeCookies(jar);
     if (cookieHeader) headers.Cookie = cookieHeader;
 
-    log("IEEE REST", metaUrl);
     const res = await httpGet(metaUrl, headers);
-    log("IEEE REST status", res.status);
     if (res.ok) {
       mergeCookies(jar, res as any);
       const data = await res.json() as any;
       const candidate: string | undefined = data?.pdfPath || data?.pdfUrl;
       if (candidate) {
         const pdfUrl = absolutize(finalDocUrl, candidate);
-        log("IEEE REST pdf", pdfUrl);
         const ok = await tryDirectPdf(pdfUrl, { referer: stampUrl, jar, fetchKind: "embed" });
-        if (ok) {
-          if (DEBUG) log("RESOLVED PDF", ok.pdfUrl, "via", "ieee(rest)");
-          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
-        }
+        if (ok) return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
       }
     }
   }
-
+  // (D) stamp.jsp page
   if (ar) {
-    log("IEEE stamp", stampUrl);
     const cookieHeader = serializeCookies(jar);
-    const res = await httpGet(stampUrl, {
-      Referer: finalDocUrl,
-      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-    });
-    log("IEEE stamp status", res.status);
+    const res = await httpGet(stampUrl, { Referer: finalDocUrl, ...(cookieHeader ? { Cookie: cookieHeader } : {}) });
     if (res.ok) {
       mergeCookies(jar, res as any);
       const ct = res.headers.get("content-type") || "";
       if (isPdfContentType(ct)) {
-        const resolved: ResolveResult = {
+        return {
           pdfUrl: res.url,
           sourceUrl: finalDocUrl,
           obtainedVia: "ieee",
-          title: pageTitle,
           fetchHeaders: { Referer: finalDocUrl, ...(cookieHeader ? { Cookie: cookieHeader } : {}) },
         };
-        if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "ieee(stamp-pdf)");
-        return resolved;
       }
       const html = await res.text();
       const root = parse(html);
@@ -372,18 +328,14 @@ async function resolveViaIeeeWithCookies(finalDocUrl: string): Promise<ResolveRe
         const href = (link.getAttribute("href") || link.getAttribute("src") || "").trim();
         const pdfUrl = absolutize(stampUrl, href);
         const ok = await tryDirectPdf(pdfUrl, { referer: stampUrl, jar, fetchKind: "embed" });
-        if (ok) {
-          if (DEBUG) log("RESOLVED PDF", ok.pdfUrl, "via", "ieee(stamp-embed)");
-          return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee", title: pageTitle };
-        }
+        if (ok) return { ...ok, sourceUrl: finalDocUrl, obtainedVia: "ieee" };
       }
     }
   }
-
   return null;
 }
 
-/* Normal HTML scan */
+/* ---------------- Generic HTML scan ---------------- */
 async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | null> {
   const res = await httpGet(landingUrl);
   log("HTML scan status", res.status, "url", res.url);
@@ -399,8 +351,6 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
   const html = await res.text();
   const root = parse(html);
 
-  const pageTitle = extractTitleFromHtml(html, finalUrl);
-
   if (isIeee(finalUrl)) {
     const viaIeee = await resolveViaIeeeWithCookies(finalUrl);
     if (viaIeee) return viaIeee;
@@ -413,7 +363,10 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
     const url = absolutize(finalUrl, metaPdf);
     const ok = await tryDirectPdf(url, { referer: finalUrl, fetchKind: "embed" });
     if (ok) {
-      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title: pageTitle, obtainedVia: "html-meta" };
+      const title =
+        root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
+        root.querySelector("title")?.text?.trim();
+      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title, obtainedVia: "html-meta" };
       if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "html-meta");
       return resolved;
     }
@@ -428,19 +381,136 @@ async function resolveViaHtmlScan(landingUrl: string): Promise<ResolveResult | n
     const url = absolutize(finalUrl, href);
     const ok = await tryDirectPdf(url, { referer: finalUrl, fetchKind: "embed" });
     if (ok) {
-      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title: pageTitle, obtainedVia: "html-link" };
+      const title =
+        root.querySelector('meta[name="citation_title"]')?.getAttribute("content") ||
+        root.querySelector("title")?.text?.trim();
+      const resolved: ResolveResult = { ...ok, sourceUrl: finalUrl, title, obtainedVia: "html-link" };
       if (DEBUG) log("RESOLVED PDF", resolved.pdfUrl, "via", "html-link");
       return resolved;
     }
+  }
+  return null;
+}
+
+/* ---------------- NEW: resolve by TITLE ---------------- */
+async function resolveByTitle_OpenAlex(query: string): Promise<ResolveResult | { doi?: string; title?: string } | null> {
+  const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per_page=5`;
+  const res = await httpGet(url, { Accept: "application/json" });
+  log("OpenAlex search status", res.status);
+  if (!res.ok) return null;
+  const data = await res.json() as any;
+  const list: any[] = Array.isArray(data?.results) ? data.results : [];
+  if (!list.length) return null;
+
+  // pick best title match
+  let best: any | null = null;
+  let bestScore = 0;
+  for (const w of list) {
+    const t = w?.display_name || w?.title;
+    if (!t) continue;
+    const s = titleScore(query, t);
+    if (s > bestScore) { best = w; bestScore = s; }
+  }
+  if (!best || bestScore < 0.45) return null; // guard against weak matches
+
+  const bestTitle: string | undefined = best.display_name || best.title;
+  const doi: string | undefined = best.doi ? String(best.doi).replace(/^https?:\/\/doi\.org\//i, "") : undefined;
+  const oa = best.best_oa_location;
+  const pdf = oa?.pdf_url || oa?.url_for_pdf;
+
+  if (pdf) {
+    const ok = await tryDirectPdf(pdf, { referer: oa?.landing_page_url ?? best?.primary_location?.source?.homepage_url, fetchKind: "embed" });
+    if (ok) return { ...ok, title: bestTitle, obtainedVia: "title-openalex" };
+  }
+  if (doi) return { doi, title: bestTitle };
+  return null;
+}
+
+async function resolveByTitle_SemanticScholar(query: string): Promise<ResolveResult | { doi?: string; title?: string } | null> {
+  const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}&limit=5&fields=title,openAccessPdf,url,doi`;
+  const res = await httpGet(url, { Accept: "application/json" });
+  log("S2 search status", res.status);
+  if (!res.ok) return null;
+  const data = await res.json() as any;
+  const list: any[] = Array.isArray(data?.data) ? data.data : [];
+  if (!list.length) return null;
+
+  let best: any | null = null;
+  let bestScore = 0;
+  for (const p of list) {
+    const t = p?.title;
+    if (!t) continue;
+    const s = titleScore(query, t);
+    if (s > bestScore) { best = p; bestScore = s; }
+  }
+  if (!best || bestScore < 0.45) return null;
+
+  const bestTitle: string | undefined = best.title;
+  const pdf = best?.openAccessPdf?.url;
+  if (pdf) {
+    const ok = await tryDirectPdf(pdf);
+    if (ok) return { ...ok, title: bestTitle, obtainedVia: "title-semanticscholar" };
+  }
+  const doi: string | undefined = best?.doi;
+  if (doi) return { doi, title: bestTitle };
+  return null;
+}
+
+async function resolveByTitle(query: string): Promise<ResolveResult | null> {
+  // 1) OpenAlex
+  const viaOA = await resolveByTitle_OpenAlex(query);
+  if (viaOA && "pdfUrl" in viaOA) return viaOA as ResolveResult;
+  if (viaOA && viaOA.doi) {
+    const doiRes = await resolveByDoi(viaOA.doi);
+    if (doiRes) return { ...doiRes, title: viaOA.title ?? doiRes.title };
+  }
+
+  // 2) Semantic Scholar
+  const viaS2 = await resolveByTitle_SemanticScholar(query);
+  if (viaS2 && "pdfUrl" in viaS2) return viaS2 as ResolveResult;
+  if (viaS2 && viaS2.doi) {
+    const doiRes = await resolveByDoi(viaS2.doi);
+    if (doiRes) return { ...doiRes, title: viaS2.title ?? doiRes.title };
   }
 
   return null;
 }
 
+/* ---------------- DOI entry (reused) ---------------- */
+async function resolveByDoi(doi: string): Promise<ResolveResult | null> {
+  // Resolve DOI → landing page for referer/cookies
+  const landing = await httpGet(`https://doi.org/${doi}`);
+  let docUrl: string | undefined;
+  if (landing.ok) {
+    docUrl = landing.url;
+    log("DOI resolved to", docUrl);
+    if (docUrl && isIeee(docUrl)) {
+      const viaIeee = await resolveViaIeeeWithCookies(docUrl);
+      if (viaIeee) return { ...viaIeee, doi };
+    }
+  }
+  // OA APIs
+  const viaUP = await resolveViaUnpaywall(doi, docUrl, docUrl && isIeee(docUrl) ? { map: new Map() } : undefined);
+  if (viaUP) return viaUP;
+
+  if (docUrl) {
+    const viaHtml = await resolveViaHtmlScan(docUrl);
+    if (viaHtml) return { ...viaHtml, doi };
+  }
+  const viaS2 = await resolveViaSemanticScholar(doi);
+  if (viaS2) return viaS2;
+  const viaOA = await resolveViaOpenAlex(doi);
+  if (viaOA) return viaOA;
+
+  return null;
+}
+
+/* ---------------- Entry ---------------- */
 export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
   const input = inputRaw.trim();
   log("resolve input:", input);
 
+  // Special-case: IEEE stamp page
   try {
     const u = new URL(input);
     if (isIeeeStampUrl(u)) {
@@ -448,47 +518,35 @@ export async function resolveToPdf(inputRaw: string): Promise<ResolveResult> {
       const viaIeee = await resolveViaIeeeWithCookies(docUrl);
       if (viaIeee) return viaIeee;
     }
-  } catch {}
+  } catch { /* not a URL */ }
 
+  // 1) direct .pdf
   const direct = await tryDirectPdf(input);
   if (direct) return direct;
 
+  // 2) arXiv
   const arxiv = await resolveArxiv(input);
   if (arxiv) return arxiv;
 
+  // 3) DOI flow
   if (isProbablyDoi(input)) {
     const doi = stripDoi(input);
-    const landing = await httpGet(`https://doi.org/${doi}`);
-    let docUrl: string | undefined;
-    if (landing.ok) {
-      docUrl = landing.url;
-      log("DOI resolved to", docUrl);
-      if (docUrl && isIeee(docUrl)) {
-        const viaIeee = await resolveViaIeeeWithCookies(docUrl);
-        if (viaIeee) return { ...viaIeee, doi };
-      }
-    }
-
-    const viaUP = await resolveViaUnpaywall(doi, docUrl, docUrl && isIeee(docUrl) ? { map: new Map() } : undefined);
-    if (viaUP) return viaUP;
-
-    if (docUrl) {
-      const viaHtml = await resolveViaHtmlScan(docUrl);
-      if (viaHtml) return { ...viaHtml, doi };
-    }
-
-    const viaS2 = await resolveViaSemanticScholar(doi);
-    if (viaS2) return viaS2;
-
-    const viaOA = await resolveViaOpenAlex(doi);
-    if (viaOA) return viaOA;
+    const viaDoi = await resolveByDoi(doi);
+    if (viaDoi) return viaDoi;
   }
 
+  // 4) Generic landing page
   try {
     const url = new URL(input).toString();
     const viaHtml = await resolveViaHtmlScan(url);
     if (viaHtml) return viaHtml;
-  } catch {}
+  } catch {
+    // 5) NEW: treat the input as a TITLE search
+    if (input.length >= 6 && /\s/.test(input)) {
+      const viaTitle = await resolveByTitle(input);
+      if (viaTitle) return viaTitle;
+    }
+  }
 
   throw new Error("No openly accessible PDF found. If this paper is paywalled, please upload the PDF directly.");
 }
