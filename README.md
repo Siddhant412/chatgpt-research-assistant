@@ -37,8 +37,7 @@ ngrok http 2091
 5. Connect in ChatGPT  
 In ChatGPT, go to Settings -> Apps & Connectors -> Create
 Endpoint: ngrok url with /mcp (e.g. https://<your-subdomain>.ngrok-free.app/mcp)
-Auth: No auth
-Save
+Auth: No auth, Save
 
 6. Use app in Chat
 Open a chat, and add the created app into the chat to use it
