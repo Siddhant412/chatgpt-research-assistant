@@ -34,7 +34,7 @@ npm run dev   # starts on http://127.0.0.1:2091/mcp
 ngrok http 2091
 ```
 
-5. Connect in ChatGPT
+5. Connect in ChatGPT  
 In ChatGPT, go to Settings -> Apps & Connectors -> Create
 Endpoint: ngrok url with /mcp (e.g. https://<your-subdomain>.ngrok-free.app/mcp)
 Auth: No auth
