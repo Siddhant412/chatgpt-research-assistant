@@ -3,8 +3,9 @@
 A tiny end-to-end “Research Notes” app that plugs into ChatGPT via MCP (Model Context Protocol). It resolves DOIs/URLs to PDFs, downloads and indexes papers locally and lets ChatGPT summarize the paper and stores notes. A minimal React widget renders inside the ChatGPT UI.
 
 ## Prerequisites
-Node.js 18+
-ngrok (or any HTTPS tunnel) for the MCP server
+Node.js 18+  
+ngrok (or any HTTPS tunnel) for the MCP server  
+ChatGPT plus/pro subscription and development mode turned on
 
 ### Setup
 1. Install dependencies
@@ -33,7 +34,7 @@ npm run dev   # starts on http://127.0.0.1:2091/mcp
 ngrok http 2091
 ```
 
-5. Connect in ChatGPT (plus / pro subscription required and developer mode turned on)
+5. Connect in ChatGPT
 In ChatGPT, go to Settings -> Apps & Connectors -> Create
 Endpoint: ngrok url with /mcp (e.g. https://<your-subdomain>.ngrok-free.app/mcp)
 Auth: No auth
